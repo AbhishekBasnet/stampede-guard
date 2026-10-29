@@ -34,7 +34,7 @@ func (s *Server) handleGetCampaign(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, c.View(0, 0, 0))
+	httpx.WriteJSON(w, http.StatusOK, s.view(c))
 }
 
 func (s *Server) handleListCampaigns(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +45,7 @@ func (s *Server) handleListCampaigns(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]campaign.View, 0, len(list))
 	for _, c := range list {
-		views = append(views, c.View(0, 0, 0))
+		views = append(views, s.view(c))
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"campaigns": views})
 }

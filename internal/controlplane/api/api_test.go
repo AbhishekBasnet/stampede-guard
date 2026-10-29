@@ -21,8 +21,9 @@ import (
 const token = "test-token"
 
 type fixture struct {
-	mux   *http.ServeMux
-	store *store.Store
+	mux    *http.ServeMux
+	store  *store.Store
+	server *Server
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -33,10 +34,11 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	mux := http.NewServeMux()
-	New(Config{AdminToken: token, DefaultMinRate: 20, DefaultMaxRate: 5000}, st,
+	srv := New(Config{AdminToken: token, DefaultMinRate: 20, DefaultMaxRate: 5000}, st,
 		clock.NewFake(time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)),
-		slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
-	return &fixture{mux: mux, store: st}
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.Register(mux)
+	return &fixture{mux: mux, store: st, server: srv}
 }
 
 func (f *fixture) do(method, path, body string, auth bool) *httptest.ResponseRecorder {

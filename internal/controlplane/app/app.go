@@ -12,6 +12,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/AbhishekBasnet/stampede-guard/internal/controlplane/api"
+	"github.com/AbhishekBasnet/stampede-guard/internal/controlplane/dispatcher"
+	"github.com/AbhishekBasnet/stampede-guard/internal/controlplane/health"
+	"github.com/AbhishekBasnet/stampede-guard/internal/controlplane/pacer"
+	"github.com/AbhishekBasnet/stampede-guard/internal/controlplane/push"
 	"github.com/AbhishekBasnet/stampede-guard/internal/controlplane/store"
 	"github.com/AbhishekBasnet/stampede-guard/internal/platform/config"
 	"github.com/AbhishekBasnet/stampede-guard/internal/platform/httpx"
@@ -134,6 +138,8 @@ type App struct {
 	store    *store.Store
 	registry *prometheus.Registry
 	handler  http.Handler
+	poller   *health.Poller
+	manager  *dispatcher.Manager
 }
 
 func New(ctx context.Context, cfg Config, clk clock.Clock, log *slog.Logger) (*App, error) {
@@ -143,12 +149,46 @@ func New(ctx context.Context, cfg Config, clk clock.Clock, log *slog.Logger) (*A
 	}
 	a := &App{cfg: cfg, log: log, store: st, registry: prometheus.NewRegistry()}
 
+	a.poller = health.NewPoller(cfg.TargetHealthURL, cfg.AdminToken, cfg.HealthPollInterval,
+		cfg.HealthPollInterval, cfg.HealthStaleAfter, clk, log)
+	if err := a.poller.RegisterMetrics(a.registry); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	prov, err := push.NewFCM(ctx, push.FCMConfig{
+		BaseURL: cfg.FCMBaseURL, ProjectID: cfg.FCMProjectID, CredentialsFile: cfg.FCMCredentialsFile,
+		Timeout: cfg.FCMTimeout, Clock: clk,
+	})
+	if err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("fcm provider: %w", err)
+	}
+	a.manager = dispatcher.NewManager(dispatcher.Config{
+		TickInterval:      cfg.DispatchTick,
+		SendConcurrency:   cfg.DispatchSendConcurrency,
+		MaxAttempts:       cfg.DispatchMaxAttempts,
+		CapacityRPS:       cfg.TargetCapacityRPS,
+		TargetUtilization: cfg.TargetUtilization,
+		Adaptive: pacer.AdaptiveConfig{
+			MinRate: float64(cfg.PacerMinRate), MaxRate: float64(cfg.PacerMaxRate), StartRate: float64(cfg.PacerStartRate),
+			AdditiveIncreasePerSec: cfg.PacerAdditiveIncreasePerS, DecreaseFactor: cfg.PacerDecreaseFactor,
+			DecreaseCooldown: cfg.PacerDecreaseCooldown, HighHeadroom: cfg.PacerHighHeadroom,
+		},
+		Amplification: pacer.AmplificationConfig{
+			DefaultPrior: cfg.AmpDefaultPrior, MinSent: cfg.AmpMinSent, MinElapsed: cfg.AmpMinElapsed,
+		},
+		AmpSettle: cfg.AmpSettle,
+	}, st, prov, a.poller, clk, a.registry, log)
+
 	mux := http.NewServeMux()
-	api.New(api.Config{
+	apiServer := api.New(api.Config{
 		AdminToken:     cfg.AdminToken,
 		DefaultMinRate: cfg.PacerMinRate,
 		DefaultMaxRate: cfg.PacerMaxRate,
-	}, st, clk, log).Register(mux)
+	}, st, clk, log)
+	apiServer.SetLifecycle(a.manager)
+	apiServer.SetHealth(a.poller)
+	apiServer.Register(mux)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(a.registry, promhttp.HandlerOpts{}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -160,18 +200,32 @@ func New(ctx context.Context, cfg Config, clk clock.Clock, log *slog.Logger) (*A
 
 func (a *App) Handler() http.Handler { return a.handler }
 
+func (a *App) Start(ctx context.Context) error {
+	go a.poller.Run(ctx)
+	if err := a.manager.ResumeRunningOnBoot(ctx); err != nil {
+		return fmt.Errorf("resume running campaigns: %w", err)
+	}
+	return nil
+}
+
+func (a *App) Stop() {
+	a.manager.Shutdown()
+	if err := a.store.Close(); err != nil {
+		a.log.Error("close store", "error", err)
+	}
+}
+
 func (a *App) Run(ctx context.Context) error {
-	defer func() {
-		if err := a.store.Close(); err != nil {
-			a.log.Error("close store", "error", err)
-		}
-	}()
+	defer a.Stop()
 	if a.cfg.AdminToken == DefaultAdminToken {
 		a.log.Warn("using the default admin token; set ADMIN_TOKEN outside local development")
 	}
 	a.log.Info("control-plane starting", "listen", a.cfg.Listen, "db_path", a.cfg.DBPath,
 		"target_health_url", a.cfg.TargetHealthURL, "target_capacity_rps", a.cfg.TargetCapacityRPS,
 		"target_utilization", a.cfg.TargetUtilization, "fcm_base_url", a.cfg.FCMBaseURL)
+	if err := a.Start(ctx); err != nil {
+		return err
+	}
 
 	srv := httpx.NewServer(a.cfg.Listen, a.handler)
 	errc := make(chan error, 1)
