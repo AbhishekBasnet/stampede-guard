@@ -3,6 +3,7 @@ module github.com/AbhishekBasnet/stampede-guard
 go 1.26.10
 
 require (
+	cloud.google.com/go/compute/metadata v0.3.0 // indirect
 	codeberg.org/go-fonts/liberation v0.5.0 // indirect
 	codeberg.org/go-latex/latex v0.2.0 // indirect
 	codeberg.org/go-pdf/fpdf v0.11.1 // indirect
