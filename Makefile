@@ -1,10 +1,13 @@
-.PHONY: build test vet fmt e2e up down experiment clean
+.PHONY: build test race vet fmt e2e up down experiment clean
 
 build:
 	go build ./...
 
 test:
 	go test ./...
+
+race: vet
+	go test -race -count=1 ./...
 
 vet:
 	go vet ./...
