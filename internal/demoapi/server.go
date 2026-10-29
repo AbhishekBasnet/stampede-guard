@@ -190,6 +190,8 @@ func (s *Server) handleReset(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) Start(ctx context.Context) { s.guard.Start(ctx) }
+
 func (s *Server) Run(ctx context.Context) error {
 	if s.cfg.AdminToken == DefaultAdminToken {
 		s.log.Warn("using the default admin token; set ADMIN_TOKEN outside local development")
@@ -199,7 +201,7 @@ func (s *Server) Run(ctx context.Context) error {
 		"db_wait_timeout_ms", s.cfg.DBWaitTimeout.Milliseconds(), "db_respect_cancel", s.cfg.DBRespectCancel,
 		"max_in_flight", s.cfg.Guard.MaxInFlight, "window_s", s.cfg.Guard.WindowSeconds)
 
-	s.guard.Start(ctx)
+	s.Start(ctx)
 	srv := httpx.NewServer(s.cfg.Listen, s.handler)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
